@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import { assetKeySchema, sourceUrlSchema, type ImportSettings, type Item } from "./model";
-import { assetUrl, desktop, saveAsset } from "./storage";
+import { acquireAssetUrl, desktop, saveAsset } from "./storage";
 
 const documentSchema = z.object({ url: sourceUrlSchema.refine(Boolean), mime: z.string(), text: z.string() });
 const downloadedSchema = z.object({ asset: assetKeySchema.refine(Boolean), mime: z.string() });
@@ -73,38 +73,48 @@ export function mediaKind(mime: string): "image" | "video" | undefined {
 }
 
 async function dimensions(asset: string, mime: string, signal: AbortSignal) {
-  const url = await assetUrl(asset, mime);
-  checkCancelled(signal);
-  return new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const media = mime.startsWith("image/") ? new Image() : document.createElement("video");
-    const cleanup = () => {
-      signal.removeEventListener("abort", cancel);
-      media.onerror = null;
-      if (media instanceof HTMLImageElement) media.onload = null;
-      else media.onloadedmetadata = null;
-      media.removeAttribute("src");
-      if (media instanceof HTMLVideoElement) media.load();
-    };
-    const cancel = () => {
-      cleanup();
-      reject(new DOMException("Import cancelled.", "AbortError"));
-    };
-    const loaded = () => {
-      const width = media instanceof HTMLImageElement ? media.naturalWidth : media.videoWidth;
-      const height = media instanceof HTMLImageElement ? media.naturalHeight : media.videoHeight;
-      cleanup();
-      resolve({ width, height });
-    };
-    media.onerror = () => {
-      cleanup();
-      // A downloaded source can still be retained when this webview cannot decode its format.
-      resolve({ width: 0, height: 0 });
-    };
-    if (media instanceof HTMLImageElement) media.onload = loaded;
-    else { media.preload = "metadata"; media.onloadedmetadata = loaded; }
-    signal.addEventListener("abort", cancel, { once: true });
-    media.src = url;
-  });
+  const lease = acquireAssetUrl(asset, mime);
+  const releaseOnCancel = () => lease.release();
+  signal.addEventListener("abort", releaseOnCancel, { once: true });
+  try {
+    checkCancelled(signal);
+    const url = await lease.url;
+    checkCancelled(signal);
+    return await new Promise<{ width: number; height: number }>((resolve, reject) => {
+      const media = mime.startsWith("image/") ? new Image() : document.createElement("video");
+      media.crossOrigin = "anonymous";
+      const cleanup = () => {
+        signal.removeEventListener("abort", cancel);
+        media.onerror = null;
+        if (media instanceof HTMLImageElement) media.onload = null;
+        else media.onloadedmetadata = null;
+        media.removeAttribute("src");
+        if (media instanceof HTMLVideoElement) media.load();
+      };
+      const cancel = () => {
+        cleanup();
+        reject(new DOMException("Import cancelled.", "AbortError"));
+      };
+      const loaded = () => {
+        const width = media instanceof HTMLImageElement ? media.naturalWidth : media.videoWidth;
+        const height = media instanceof HTMLImageElement ? media.naturalHeight : media.videoHeight;
+        cleanup();
+        resolve({ width, height });
+      };
+      media.onerror = () => {
+        cleanup();
+        // A downloaded source can still be retained when this webview cannot decode its format.
+        resolve({ width: 0, height: 0 });
+      };
+      if (media instanceof HTMLImageElement) media.onload = loaded;
+      else { media.preload = "metadata"; media.onloadedmetadata = loaded; }
+      signal.addEventListener("abort", cancel, { once: true });
+      media.src = url;
+    });
+  } finally {
+    signal.removeEventListener("abort", releaseOnCancel);
+    lease.release();
+  }
 }
 
 export const sourceTransport: SourceTransport = {

@@ -13,6 +13,11 @@ fn asset_path(root: &Path, key: &str) -> Result<PathBuf, String> {
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) { return Err("Invalid asset identifier.".into()); }
     Ok(root.join("objects").join(key))
 }
+fn existing_asset_path(root: &Path, key: &str) -> Result<PathBuf, String> {
+    let path = asset_path(root, key)?;
+    if !path.is_file() { return Err("The local file is unavailable. Re-import the original file.".into()); }
+    Ok(path)
+}
 
 #[tauri::command]
 fn load_library(state: tauri::State<AppState>) -> Result<Option<String>, String> {
@@ -119,6 +124,11 @@ fn save_asset(state: tauri::State<AppState>, key: String, bytes: Vec<u8>) -> Res
 #[tauri::command]
 fn read_asset(state: tauri::State<AppState>, key: String) -> Result<Vec<u8>, String> { fs::read(asset_path(&state.root, &key)?).map_err(|_| "The local file is unavailable. Re-import the original file.".into()) }
 
+#[tauri::command]
+fn asset_file_path(state: tauri::State<AppState>, key: String) -> Result<String, String> {
+    existing_asset_path(&state.root, &key)?.into_os_string().into_string().map_err(|_| "The local file path is unavailable.".into())
+}
+
 fn web_url(input: &str) -> Result<url::Url, String> {
     let url = url::Url::parse(input).map_err(|_| "Enter a valid URL.")?;
     if !["http", "https"].contains(&url.scheme()) || !url.username().is_empty() || url.password().is_some() { return Err("Use an HTTP or HTTPS URL without embedded credentials.".into()); }
@@ -172,12 +182,34 @@ pub fn run() {
         let db = Connection::open(root.join("library.sqlite"))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS library(id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL CHECK(json_valid(body))); PRAGMA user_version=1;")?;
         app.manage(AppState { root, db: Mutex::new(db), cancel: Notify::new(), sources: remote::Requests::default() }); Ok(())
-    }).invoke_handler(tauri::generate_handler![load_library, save_library, save_asset, read_asset, set_provider_key, analyze, cancel_analysis, open_external, fetch_source_document, download_source_asset, cancel_source_request]).run(tauri::generate_context!()).expect("Unable to start Inspo Library");
+    }).invoke_handler(tauri::generate_handler![load_library, save_library, save_asset, read_asset, asset_file_path, set_provider_key, analyze, cancel_analysis, open_external, fetch_source_document, download_source_asset, cancel_source_request]).run(tauri::generate_context!()).expect("Unable to start Inspo Library");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_media_paths_require_a_valid_existing_object() {
+        let root = std::env::temp_dir().join(format!("inspo-media-test-{}", uuid::Uuid::new_v4()));
+        let key = hash(b"local media");
+        fs::create_dir_all(root.join("objects")).unwrap();
+        assert!(existing_asset_path(&root, "../library.sqlite").is_err());
+        assert!(existing_asset_path(&root, &key.to_uppercase()).is_err());
+        assert!(existing_asset_path(&root, &key).is_err());
+        fs::create_dir(root.join("objects").join(&key)).unwrap();
+        assert!(existing_asset_path(&root, &key).is_err());
+        fs::remove_dir(root.join("objects").join(&key)).unwrap();
+        fs::write(root.join("objects").join(&key), b"local media").unwrap();
+        assert_eq!(existing_asset_path(&root, &key).unwrap(), root.join("objects").join(key));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn asset_protocol_recognizes_extensionless_image_and_video_objects() {
+        let image = b"\x89PNG\r\n\x1a\n";
+        let video = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2";
+        assert_eq!(tauri::utils::mime_type::MimeType::parse(image, &hash(image)), "image/png");
+        assert_eq!(tauri::utils::mime_type::MimeType::parse(video, &hash(video)), "video/mp4");
+    }
     #[test]
     fn trust_boundaries_reject_paths_and_unsafe_endpoints() {
         let root = Path::new("library");

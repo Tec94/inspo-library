@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import {
   emptyLibrary,
   librarySchema,
@@ -10,7 +10,17 @@ import {
 
 export const desktop = isTauri();
 let dbPromise: Promise<IDBDatabase> | undefined;
-const objectUrls = new Map<string, string>();
+interface SharedAssetUrl {
+  url: Promise<string>;
+  consumers: number;
+  objectUrl?: string;
+  settled: boolean;
+}
+export interface AssetUrlLease {
+  url: Promise<string>;
+  release: () => void;
+}
+const assetUrls = new Map<string, SharedAssetUrl>();
 let sessionKey = "";
 let sessionEndpoint = "";
 
@@ -113,14 +123,49 @@ async function readAsset(key: string, mime: string): Promise<Blob> {
       reject(new Error("Unable to read this local file."));
   });
 }
-export async function assetUrl(key: string, mime: string): Promise<string> {
-  if (!key) return "";
-  if (key.startsWith("demo/")) return `/${key}`;
-  const cached = objectUrls.get(key);
-  if (cached) return cached;
-  const url = URL.createObjectURL(await readAsset(key, mime));
-  objectUrls.set(key, url);
-  return url;
+export function acquireAssetUrl(key: string, mime: string): AssetUrlLease {
+  if (!key || key.startsWith("demo/")) {
+    return { url: Promise.resolve(key ? `/${key}` : ""), release() {} };
+  }
+  const cacheKey = `${key}\0${mime}`;
+  let shared = assetUrls.get(cacheKey);
+  if (!shared) {
+    // Raster images and videos can stream from disk; documents retain typed blobs.
+    const nativeFile = desktop && (mime.startsWith("video/") || (mime.startsWith("image/") && mime !== "image/svg+xml"));
+    const url = nativeFile
+      ? invoke<string>("asset_file_path", { key }).then((path) => convertFileSrc(path))
+      : readAsset(key, mime).then((blob) => URL.createObjectURL(blob));
+    const entry: SharedAssetUrl = { url, consumers: 0, settled: false };
+    assetUrls.set(cacheKey, entry);
+    void url.then((value) => {
+      entry.settled = true;
+      if (!nativeFile) entry.objectUrl = value;
+      if (!entry.consumers) disposeAssetUrl(cacheKey, entry);
+    }, () => {
+      entry.settled = true;
+      if (assetUrls.get(cacheKey) === entry) assetUrls.delete(cacheKey);
+    });
+    shared = entry;
+  }
+  const entry = shared;
+  entry.consumers++;
+  let released = false;
+  return {
+    url: entry.url,
+    release() {
+      if (released) return;
+      released = true;
+      entry.consumers--;
+      if (!entry.consumers && entry.settled) disposeAssetUrl(cacheKey, entry);
+    },
+  };
+}
+function disposeAssetUrl(key: string, entry: SharedAssetUrl) {
+  if (entry.objectUrl) {
+    URL.revokeObjectURL(entry.objectUrl);
+    entry.objectUrl = undefined;
+  }
+  if (assetUrls.get(key) === entry) assetUrls.delete(key);
 }
 export function dataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

@@ -15,7 +15,7 @@ import {
   LoaderCircle,
   ExternalLink,
 } from "lucide-react";
-import { assetUrl, openExternal } from "./storage";
+import { acquireAssetUrl, openExternal } from "./storage";
 import type { Item } from "./model";
 import { embedUrl } from "./importing";
 
@@ -111,7 +111,57 @@ export interface MediaProps {
   allowEmbeds?: boolean;
   preferEmbed?: boolean;
 }
-export function Media({
+const previewVisibility = new Map<Element, (visible: boolean) => void>();
+let previewObserver: IntersectionObserver | undefined;
+
+function PreviewMedia(props: MediaProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    previewObserver ??= new IntersectionObserver((entries) => {
+      for (const entry of entries) previewVisibility.get(entry.target)?.(entry.isIntersecting);
+    });
+    previewVisibility.set(element, setVisible);
+    previewObserver.observe(element);
+    return () => {
+      previewObserver?.unobserve(element);
+      previewVisibility.delete(element);
+      if (!previewVisibility.size) {
+        previewObserver?.disconnect();
+        previewObserver = undefined;
+      }
+    };
+  }, []);
+  return <div ref={ref} className="media-preview">
+    {visible ? <LoadedMedia key={`${props.item.asset}:${props.item.mime}`} {...props} /> : <div className="media-placeholder" aria-hidden="true" />}
+  </div>;
+}
+
+export function Media(props: MediaProps) {
+  if (!props.controls && props.item.asset && (props.item.kind === "image" || props.item.kind === "video")) {
+    return <PreviewMedia {...props} />;
+  }
+  return <LoadedMedia key={`${props.item.asset}:${props.item.mime}`} {...props} />;
+}
+
+function LocalVideo({ url, controls, onTime }: { url: string; controls: boolean; onTime?: (time: number) => void }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    video.src = url;
+    return () => {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+  }, [url]);
+  return <video ref={ref} controls={controls} preload="metadata" playsInline onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime)} />;
+}
+
+function LoadedMedia({
   item,
   controls = false,
   className = "",
@@ -122,12 +172,12 @@ export function Media({
 }: MediaProps) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const needsAsset = Boolean(item.asset && (controls || item.kind === "image" || item.kind === "video"));
   useEffect(() => {
+    if (!needsAsset) return;
     let active = true;
-    setUrl("");
-    setError("");
-    if (item.asset)
-      assetUrl(item.asset, item.mime)
+    const lease = acquireAssetUrl(item.asset, item.mime);
+    lease.url
         .then((value) => {
           if (active) setUrl(value);
         })
@@ -136,8 +186,9 @@ export function Media({
         });
     return () => {
       active = false;
+      lease.release();
     };
-  }, [item.asset, item.mime]);
+  }, [item.asset, item.mime, needsAsset]);
   if (controls && allowEmbeds && item.embed && item.review?.status !== "pending" && (!item.asset || preferEmbed || error)) {
     const source = embedUrl(item.embed);
     if (source) return <iframe className={`embed-viewer ${className}`} title={`Embedded ${item.embed.provider} source: ${item.title}`} src={source} sandbox="allow-scripts allow-same-origin allow-popups allow-presentation" allow="fullscreen; picture-in-picture; encrypted-media" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />;
@@ -158,18 +209,13 @@ export function Media({
         alt={item.title}
         draggable={false}
         loading={controls ? "eager" : "lazy"}
+        decoding="async"
       />
     );
   if (item.kind === "video" && url)
     return (
       <div className={`video-wrap ${className}`}>
-        <video
-          src={url}
-          controls={controls}
-          preload="metadata"
-          playsInline
-          onTimeUpdate={(e) => onTime?.(e.currentTarget.currentTime)}
-        />
+        <LocalVideo url={url} controls={controls} onTime={onTime} />
         {!controls && (
           <span className="video-badge">
             <Play size={12} fill="currentColor" /> Video
@@ -186,7 +232,7 @@ export function Media({
         sandbox="allow-same-origin"
       />
     );
-  if (item.asset && !url)
+  if (needsAsset && !url)
     return (
       <div className={`media-fallback ${className}`}>
         <LoaderCircle className="spinner" />

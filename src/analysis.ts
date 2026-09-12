@@ -11,7 +11,7 @@ import {
   type Answer,
   sourceLabel,
 } from "./model";
-import { assetUrl, browserKey, desktop } from "./storage";
+import { acquireAssetUrl, browserKey, desktop } from "./storage";
 
 const responseSchema = z.object({
   choices: z
@@ -40,61 +40,79 @@ export async function buildTargets(
         selection: selection.text ? "Selected text" : "Whole source",
       };
       if (item.kind === "image" && item.asset) {
+        const lease = acquireAssetUrl(item.asset, item.mime);
         const image = new Image();
-        image.src = await assetUrl(item.asset, item.mime);
-        await image.decode();
-        const crop = selection.crop || { x: 0, y: 0, width: 1, height: 1 };
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * crop.width));
-        canvas.height = Math.max(
-          1,
-          Math.round(image.naturalHeight * crop.height),
-        );
-        const context = canvas.getContext("2d");
-        if (!context)
-          throw new Error(
-            "Unable to prepare this image. Try reopening the source.",
+        image.crossOrigin = "anonymous";
+        try {
+          image.src = await lease.url;
+          await image.decode();
+          const crop = selection.crop || { x: 0, y: 0, width: 1, height: 1 };
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(image.naturalWidth * crop.width));
+          canvas.height = Math.max(
+            1,
+            Math.round(image.naturalHeight * crop.height),
           );
-        context.drawImage(
-          image,
-          crop.x * image.naturalWidth,
-          crop.y * image.naturalHeight,
-          canvas.width,
-          canvas.height,
-          0,
-          0,
-          canvas.width,
-          canvas.height,
-        );
-        target.image = canvas.toDataURL("image/png");
-        target.selection = selection.crop
-          ? `Image region: x ${crop.x * 100}%, y ${crop.y * 100}%, width ${crop.width * 100}%, height ${crop.height * 100}%`
-          : "Whole image";
+          const context = canvas.getContext("2d");
+          if (!context)
+            throw new Error(
+              "Unable to prepare this image. Try reopening the source.",
+            );
+          context.drawImage(
+            image,
+            crop.x * image.naturalWidth,
+            crop.y * image.naturalHeight,
+            canvas.width,
+            canvas.height,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+          );
+          target.image = canvas.toDataURL("image/png");
+          target.selection = selection.crop
+            ? `Image region: x ${crop.x * 100}%, y ${crop.y * 100}%, width ${crop.width * 100}%, height ${crop.height * 100}%`
+            : "Whole image";
+        } finally {
+          image.removeAttribute("src");
+          lease.release();
+        }
       }
       if (item.kind === "video" && item.asset && selection.time !== undefined) {
+        const lease = acquireAssetUrl(item.asset, item.mime);
         const video = document.createElement("video");
-        video.src = await assetUrl(item.asset, item.mime);
+        video.crossOrigin = "anonymous";
         video.preload = "auto";
-        await new Promise<void>((resolve, reject) => {
-          video.onloadeddata = () => resolve();
-          video.onerror = () =>
-            reject(new Error("The video frame could not be prepared."));
-        });
-        if (selection.time > 0)
-          await new Promise<void>((resolve) => {
-            video.onseeked = () => resolve();
-            video.currentTime = selection.time || 0;
+        try {
+          const url = await lease.url;
+          await new Promise<void>((resolve, reject) => {
+            video.onloadeddata = () => resolve();
+            video.onerror = () =>
+              reject(new Error("The video frame could not be prepared."));
+            video.src = url;
           });
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("Unable to prepare the frame.");
-        context.drawImage(video, 0, 0);
-        target.image = canvas.toDataURL("image/png");
-        target.selection = `Video frame at ${selection.time.toFixed(1)} seconds`;
-        video.removeAttribute("src");
-        video.load();
+          if (selection.time > 0)
+            await new Promise<void>((resolve, reject) => {
+              video.onseeked = () => resolve();
+              video.onerror = () => reject(new Error("The video frame could not be prepared."));
+              video.currentTime = selection.time || 0;
+            });
+          const canvas = document.createElement("canvas");
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const context = canvas.getContext("2d");
+          if (!context) throw new Error("Unable to prepare the frame.");
+          context.drawImage(video, 0, 0);
+          target.image = canvas.toDataURL("image/png");
+          target.selection = `Video frame at ${selection.time.toFixed(1)} seconds`;
+        } finally {
+          video.onloadeddata = null;
+          video.onseeked = null;
+          video.onerror = null;
+          video.removeAttribute("src");
+          video.load();
+          lease.release();
+        }
       }
       if (!target.image && !target.text.trim())
         throw new Error(

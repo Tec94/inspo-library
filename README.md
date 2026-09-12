@@ -1,5 +1,12 @@
 # Inspo Library
 
+**[Download for Windows (x64)](https://github.com/Tec94/inspo-library/releases/latest/download/Inspo-Library-windows-x64-setup.exe)**
+· [All releases](https://github.com/Tec94/inspo-library/releases)
+
+Download the `.exe` installer and run it to install the desktop app. You don't
+need Node.js, Rust, or build tools to use the installed app. The download link
+becomes available after a stable release finishes building its installer.
+
 A local reference library and source-based learning workspace. Paste links to
 save sources immediately, capture available text and media, and review posts
 flagged by your import rules. It uses React, TypeScript, Vite, and a Tauri/Rust
@@ -48,6 +55,39 @@ npm run desktop:build
 ```
 
 The installer output belongs under `src-tauri/target/release/bundle/nsis/`.
+
+### Release the Windows installer on GitHub
+
+The [Windows installer workflow](.github/workflows/release.yml) builds the tagged
+code and attaches `Inspo-Library-windows-x64-setup.exe` whenever you publish a
+GitHub release. The stable filename keeps the download link above working across
+versions. Node.js 26.5.0 matches the locally verified build environment.
+
+To release a new version:
+
+1. Update the version in `package.json`, `package-lock.json`,
+   `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the app entry in
+   `src-tauri/Cargo.lock`. Commit and push the changes, including this workflow.
+2. Open [GitHub Releases](https://github.com/Tec94/inspo-library/releases), choose
+   **Draft a new release**, and select or create a tag at the commit to release.
+   Any tag name works, including the existing `release` tag.
+3. Choose **Publish release**. Open
+   [Actions → Windows installer](https://github.com/Tec94/inspo-library/actions/workflows/release.yml)
+   to follow the build. Once it succeeds, the installer appears under the
+   release's **Assets**. Prerelease installers are available on their own release
+   pages; the download link above follows the latest stable release.
+
+To attach an installer to an existing release, open that workflow, select
+**Run workflow**, and enter its exact tag. The workflow must be on the default
+branch for this button to appear. It builds the selected tag, not the branch
+selected in the workflow menu. An existing, uploaded installer is left in place.
+
+If the repository uses
+[immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases),
+push the tag first, save a release draft using that tag, and run the workflow
+manually. Wait for the installer to appear in the draft's **Assets**, then
+publish. GitHub locks those assets on publication; the automatic workflow skips
+the installer already attached to the draft.
 
 ## Use the workspace
 

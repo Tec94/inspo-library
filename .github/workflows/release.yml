@@ -1,0 +1,101 @@
+name: Windows installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (published or draft)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      INSTALLER_NAME: Inspo-Library-windows-x64-setup.exe
+    steps:
+      - name: Check release assets
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releaseJson = gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --json assets,url
+          if ($LASTEXITCODE -ne 0) { throw "Create the release or save its draft before running this workflow." }
+          $release = $releaseJson | ConvertFrom-Json
+          $installer = $release.assets | Where-Object {
+            $_.name -eq $env:INSTALLER_NAME -and $_.state -eq 'uploaded' -and $_.size -gt 0
+          }
+          if ($installer) {
+            'needed=false' >> $env:GITHUB_OUTPUT
+            "Installer already available on [this release]($($release.url))." >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            'needed=true' >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Check out the release tag
+        if: steps.release.outputs.needed == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        if: steps.release.outputs.needed == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26.5.0'
+          package-manager-cache: false
+
+      - name: Set up Rust
+        if: steps.release.outputs.needed == 'true'
+        run: rustup default stable
+
+      - name: Install frontend dependencies
+        if: steps.release.outputs.needed == 'true'
+        run: npm ci
+
+      - name: Check frontend code
+        if: steps.release.outputs.needed == 'true'
+        run: npm run lint
+
+      - name: Test frontend and imports
+        if: steps.release.outputs.needed == 'true'
+        run: npm test
+
+      - name: Test native code
+        if: steps.release.outputs.needed == 'true'
+        run: |
+          node --input-type=module -e "import { spawnSync } from 'node:child_process'; import { desktopEnvironment } from './scripts/desktop.mjs'; const result = spawnSync('cargo', ['test', '--locked', '--manifest-path', 'src-tauri/Cargo.toml', '--lib'], { env: desktopEnvironment(), stdio: 'inherit', windowsHide: true }); if (result.error) console.error(result.error); process.exit(result.status ?? 1);"
+
+      - name: Build the Windows installer
+        if: steps.release.outputs.needed == 'true'
+        run: npm run desktop:build -- --ci -- --locked
+
+      - name: Attach the installer to the release
+        if: steps.release.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $config = Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $builtName = "$($config.productName)_$($config.version)_x64-setup.exe"
+          $builtInstaller = Get-Item -LiteralPath "src-tauri/target/release/bundle/nsis/$builtName"
+          if ($builtInstaller.Length -eq 0) { throw 'The generated installer is empty.' }
+          $releaseInstaller = Join-Path $env:RUNNER_TEMP $env:INSTALLER_NAME
+          Copy-Item -LiteralPath $builtInstaller.FullName -Destination $releaseInstaller
+          gh release upload "$env:RELEASE_TAG" "$releaseInstaller#Windows x64 installer" --repo "$env:GITHUB_REPOSITORY" --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'GitHub could not attach the installer to the release.' }
+          $tag = [Uri]::EscapeDataString($env:RELEASE_TAG)
+          "[Download Windows installer](https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$env:INSTALLER_NAME)" >> $env:GITHUB_STEP_SUMMARY
