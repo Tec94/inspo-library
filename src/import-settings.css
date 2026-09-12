@@ -1,0 +1,77 @@
+@layer components {
+  .import-setting-group {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .import-setting-group legend {
+    margin-bottom: 15px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .import-toggle {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 12px;
+  }
+
+  .import-toggle input {
+    margin-top: 2px;
+  }
+
+  .import-toggle span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .import-settings-section .import-review-note {
+    margin-top: 12px;
+    font-size: 11px;
+  }
+
+  .import-rule-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .import-rule-columns > label {
+    min-width: 0;
+  }
+
+  .import-settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .import-settings-form label {
+    font-size: 12px;
+  }
+
+  .capture-extra > summary {
+    width: fit-content;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .capture-extra > .form-stack {
+    padding-top: 16px;
+  }
+}
+
+@layer responsive {
+  @media (max-width: 700px) {
+    .import-rule-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}

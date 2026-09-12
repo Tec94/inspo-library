@@ -1,0 +1,24 @@
+[package]
+name = "inspo-library"
+version = "0.2.0"
+edition = "2021"
+
+[lib]
+name = "inspo_library"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["sync", "macros", "net", "time", "rt-multi-thread"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+open = "5"
+url = "2"
